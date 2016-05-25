@@ -25,4 +25,6 @@ dependencies {
     compile 'com.android.support:appcompat-v7:23.4.0'
     compile 'com.android.support:recyclerview-v7:23.4.0'
     compile 'com.google.code.gson:gson:2.6.2'
+    compile 'org.xutils:xutils:3.3.34'
+    compile 'com.squareup.picasso:picasso:2.5.2'
 }

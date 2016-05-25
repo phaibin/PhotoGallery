@@ -1,21 +1,31 @@
 package com.bignerdranch.android.photogallery;
 
-import android.graphics.Bitmap;
-import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.os.AsyncTask;
+import android.net.Uri;
 import android.os.Bundle;
-import android.os.Handler;
 import android.support.annotation.Nullable;
 import android.support.v4.app.Fragment;
 import android.support.v7.widget.GridLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 
+import com.google.gson.Gson;
+import com.squareup.picasso.Picasso;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.xutils.common.Callback;
+import org.xutils.http.RequestParams;
+import org.xutils.x;
+
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,6 +41,18 @@ public class PhotoGalleryFragment extends Fragment {
     private PhotoAdapter mAdapter;
     private GridLayoutManager mLayoutManager;
     private ThumbnailDownloader<PhotoHolder> mThumbnailDownloader;
+    private static final String API_KEY = "ea0b23525b4dddb967276f34c2fab0e8";
+    private static final String FETCH_RECENTS_METHOD = "flickr.photos.getRecent";
+    private static final String SEARCH_METHOD = "flickr.photos.search";
+    private static final Uri ENDPOINT = Uri.parse("https://api.flickr.com/services/rest/")
+            .buildUpon()
+            .appendQueryParameter("api_key", API_KEY)
+            .appendQueryParameter("format", "json")
+            .appendQueryParameter("nojsoncallback", "1")
+            .appendQueryParameter("extras", "url_s")
+            .build();
+    private String mRequestMethod = SEARCH_METHOD;
+    private String mQuery = "robot";
 
     public static PhotoGalleryFragment newInstance() {
         return new PhotoGalleryFragment();
@@ -39,20 +61,10 @@ public class PhotoGalleryFragment extends Fragment {
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setHasOptionsMenu(true);
         setRetainInstance(true);
-        new FetchItemsTask().execute();
 
-        Handler responseHandler = new Handler();
-        mThumbnailDownloader = new ThumbnailDownloader<>(responseHandler);
-        mThumbnailDownloader.setThumbnailDownloadListener(new ThumbnailDownloader.ThumbnailDownloaderListener<PhotoHolder>() {
-            @Override
-            public void onThumbnailDownloaded(PhotoHolder target, Bitmap thumbnail) {
-                Drawable drawable = new BitmapDrawable(getResources(), thumbnail);
-                target.bindDrawable(drawable);
-            }
-        });
-        mThumbnailDownloader.start();
-        mThumbnailDownloader.getLooper();
+        fetchPhotos();
         Log.i(TAG, "Background thread started");
     }
 
@@ -69,11 +81,17 @@ public class PhotoGalleryFragment extends Fragment {
             public void onLoadMore(int current_page) {
                 Log.i(TAG, "onLoadMore: ");
                 mPage++;
-                new FetchItemsTask().execute();
+                fetchPhotos();
             }
         });
         setupAdapter();
         return view;
+    }
+
+    @Override
+    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
+        super.onCreateOptionsMenu(menu, inflater);
+        inflater.inflate(R.menu.fragment_photo_gallery, menu);
     }
 
     @Override
@@ -100,17 +118,63 @@ public class PhotoGalleryFragment extends Fragment {
         }
     }
 
-    private class FetchItemsTask extends AsyncTask<Void, Void, List<GalleryItem>> {
-
-        @Override
-        protected List<GalleryItem> doInBackground(Void... params) {
-            return new FlickrFetchr().fetchItems(mPage);
+    String buildUrl() {
+        Uri.Builder uriBuilder = ENDPOINT.buildUpon().appendQueryParameter("method", mRequestMethod);
+        if (mRequestMethod.equals(SEARCH_METHOD)) {
+            uriBuilder.appendQueryParameter("text", mQuery);
         }
+        uriBuilder.appendQueryParameter("page", String.valueOf(mPage));
+        return uriBuilder.build().toString();
+    }
 
-        @Override
-        protected void onPostExecute(List<GalleryItem> galleryItems) {
-            mItems.addAll(galleryItems);
-            setupAdapter();
+    void fetchPhotos() {
+        String url = buildUrl();
+        RequestParams params = new RequestParams(url);
+        x.http().get(params, new Callback.CommonCallback<String>() {
+            @Override
+            public void onSuccess(String result) {
+                Log.i(TAG, "Received JSON: " + result);
+
+                try {
+                    JSONObject jsonBody = new JSONObject(result);
+                    parseItems(jsonBody);
+                } catch (JSONException e) {
+                    Log.i(TAG, "Failed to parse JSON", e);
+                } catch (IOException e) {
+                    Log.e(TAG, "Failed to fetch items", e);
+                }
+                setupAdapter();
+            }
+
+            @Override
+            public void onError(Throwable ex, boolean isOnCallback) {
+
+            }
+
+            @Override
+            public void onCancelled(CancelledException cex) {
+
+            }
+
+            @Override
+            public void onFinished() {
+
+            }
+        });
+    }
+
+    private void parseItems(JSONObject jsonBody) throws IOException, JSONException {
+        JSONObject photosJsonObject = jsonBody.getJSONObject("photos");
+        JSONArray photoJsonArray = photosJsonObject.getJSONArray("photo");
+
+        if (mPage == 1) {
+            mItems.clear();
+        }
+        Gson gson = new Gson();
+        for (int i = 0; i < photoJsonArray.length(); i++) {
+            JSONObject photoJsonObject = photoJsonArray.getJSONObject(i);
+            GalleryItem item = gson.fromJson(photoJsonObject.toString(), GalleryItem.class);
+            mItems.add(item);
         }
     }
 
@@ -122,10 +186,13 @@ public class PhotoGalleryFragment extends Fragment {
             mItemImageView = (ImageView) itemView.findViewById(R.id.fragment_photo_gallery_image_view);
         }
 
-        public void bindDrawable(Drawable drawable) {
-            mItemImageView.setImageDrawable(drawable);
-        }
+        public void bindObject(Object object) {
+            GalleryItem galleryItem = (GalleryItem) object;
+//            ImageOptions options = new ImageOptions.Builder().setLoadingDrawableId(R.drawable.bill_up_close).build();
+//            x.image().bind(mItemImageView, galleryItem.getUrl(), options);
 
+            Picasso.with(getActivity()).load(galleryItem.getUrl()).placeholder(R.drawable.bill_up_close).into(mItemImageView);
+        }
     }
 
     private class PhotoAdapter extends RecyclerView.Adapter<PhotoHolder> {
@@ -142,8 +209,7 @@ public class PhotoGalleryFragment extends Fragment {
         public void onBindViewHolder(PhotoHolder holder, int position) {
             GalleryItem galleryItem = mItems.get(position);
             Drawable placeholder = getResources().getDrawable(R.drawable.bill_up_close);
-            holder.bindDrawable(placeholder);
-            mThumbnailDownloader.queueThumbnail(holder, galleryItem.getUrl());
+            holder.bindObject(galleryItem);
         }
 
         @Override
