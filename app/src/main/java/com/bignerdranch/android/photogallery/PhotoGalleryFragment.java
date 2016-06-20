@@ -1,5 +1,7 @@
 package com.bignerdranch.android.photogallery;
 
+import android.app.ProgressDialog;
+import android.content.Intent;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
@@ -7,10 +9,12 @@ import android.support.annotation.Nullable;
 import android.support.v4.app.Fragment;
 import android.support.v7.widget.GridLayoutManager;
 import android.support.v7.widget.RecyclerView;
+import android.support.v7.widget.SearchView;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
@@ -52,7 +56,8 @@ public class PhotoGalleryFragment extends Fragment {
             .appendQueryParameter("extras", "url_s")
             .build();
     private String mRequestMethod = SEARCH_METHOD;
-    private String mQuery = "robot";
+    private SearchView mSearchView;
+    private ProgressDialog mProgress;
 
     public static PhotoGalleryFragment newInstance() {
         return new PhotoGalleryFragment();
@@ -64,8 +69,12 @@ public class PhotoGalleryFragment extends Fragment {
         setHasOptionsMenu(true);
         setRetainInstance(true);
 
+        mPage = 1;
         fetchPhotos();
         Log.i(TAG, "Background thread started");
+
+        Intent i = PollService.newIntent(getActivity());
+        getActivity().startService(i);
     }
 
     @Nullable
@@ -81,6 +90,7 @@ public class PhotoGalleryFragment extends Fragment {
             public void onLoadMore(int current_page) {
                 Log.i(TAG, "onLoadMore: ");
                 mPage++;
+                mPage = 1;
                 fetchPhotos();
             }
         });
@@ -92,6 +102,80 @@ public class PhotoGalleryFragment extends Fragment {
     public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
         super.onCreateOptionsMenu(menu, inflater);
         inflater.inflate(R.menu.fragment_photo_gallery, menu);
+
+        String query = QueryPreferences.getStoredQuery(getActivity());
+        final MenuItem searchItem = menu.findItem(R.id.menu_item_search);
+        mSearchView = (SearchView) searchItem.getActionView();
+        if (query != null) {
+            mSearchView.setIconified(false);
+            mSearchView.setQuery(query, false);
+            mSearchView.clearFocus();
+        }
+
+        mSearchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+            @Override
+            public boolean onQueryTextSubmit(String query) {
+                Log.d(TAG, "QueryTextSubmit: " + query);
+                QueryPreferences.setStoredQuery(getActivity(), query);
+                mPage = 1;
+                fetchPhotos();
+                mSearchView.clearFocus();
+                return true;
+            }
+
+            @Override
+            public boolean onQueryTextChange(String newText) {
+                Log.d(TAG, "QueryTextChange: " + newText);
+                return false;
+            }
+        });
+
+        mSearchView.setOnCloseListener(new SearchView.OnCloseListener() {
+            @Override
+            public boolean onClose() {
+                Log.d(TAG, "onClose: ");
+                QueryPreferences.setStoredQuery(getActivity(), null);
+                mPage = 1;
+                fetchPhotos();
+                return false;
+            }
+        });
+
+//        searchView.setOnSearchClickListener(new View.OnClickListener() {
+//
+//            @Override
+//            public void onClick(View v) {
+//                String query = QueryPreferences.getStoredQuery(getActivity());
+//                searchView.setQuery(query, false);
+//            }
+//        });
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.menu_item_clear:
+                QueryPreferences.setStoredQuery(getActivity(), null);
+                mPage = 1;
+                fetchPhotos();
+                mSearchView.setQuery("", false);
+                mSearchView.setIconified(true);
+
+                return true;
+            default:
+                return super.onOptionsItemSelected(item);
+        }
+    }
+
+    private void showLoading() {
+        mProgress = new ProgressDialog(getActivity());
+        mProgress.setTitle("Loading");
+        mProgress.setMessage("Wait while loading...");
+        mProgress.show();
+    }
+
+    private void dismissLoading() {
+        mProgress.dismiss();
     }
 
     @Override
@@ -119,15 +203,18 @@ public class PhotoGalleryFragment extends Fragment {
     }
 
     String buildUrl() {
-        Uri.Builder uriBuilder = ENDPOINT.buildUpon().appendQueryParameter("method", mRequestMethod);
-        if (mRequestMethod.equals(SEARCH_METHOD)) {
-            uriBuilder.appendQueryParameter("text", mQuery);
+        String query = QueryPreferences.getStoredQuery(getActivity());
+        Uri.Builder uriBuilder = ENDPOINT.buildUpon().appendQueryParameter("method", FETCH_RECENTS_METHOD);
+        if (query != null) {
+            uriBuilder = ENDPOINT.buildUpon().appendQueryParameter("method", SEARCH_METHOD);
+            uriBuilder.appendQueryParameter("text", query);
         }
         uriBuilder.appendQueryParameter("page", String.valueOf(mPage));
         return uriBuilder.build().toString();
     }
 
     void fetchPhotos() {
+        showLoading();
         String url = buildUrl();
         RequestParams params = new RequestParams(url);
         x.http().get(params, new Callback.CommonCallback<String>() {
@@ -144,21 +231,25 @@ public class PhotoGalleryFragment extends Fragment {
                     Log.e(TAG, "Failed to fetch items", e);
                 }
                 setupAdapter();
+                if (mPage == 1) {
+                    mLayoutManager.scrollToPosition(0);
+                }
+                dismissLoading();
             }
 
             @Override
             public void onError(Throwable ex, boolean isOnCallback) {
-
+                dismissLoading();
             }
 
             @Override
             public void onCancelled(CancelledException cex) {
-
+                dismissLoading();
             }
 
             @Override
             public void onFinished() {
-
+                dismissLoading();
             }
         });
     }
@@ -188,10 +279,10 @@ public class PhotoGalleryFragment extends Fragment {
 
         public void bindObject(Object object) {
             GalleryItem galleryItem = (GalleryItem) object;
-//            ImageOptions options = new ImageOptions.Builder().setLoadingDrawableId(R.drawable.bill_up_close).build();
+//            ImageOptions options = new ImageOptions.Builder().setLoadingDrawableId(R.drawable.sample).build();
 //            x.image().bind(mItemImageView, galleryItem.getUrl(), options);
 
-            Picasso.with(getActivity()).load(galleryItem.getUrl()).placeholder(R.drawable.bill_up_close).into(mItemImageView);
+            Picasso.with(getActivity()).load(galleryItem.getUrl()).placeholder(R.drawable.sample).into(mItemImageView);
         }
     }
 
@@ -208,7 +299,7 @@ public class PhotoGalleryFragment extends Fragment {
         @Override
         public void onBindViewHolder(PhotoHolder holder, int position) {
             GalleryItem galleryItem = mItems.get(position);
-            Drawable placeholder = getResources().getDrawable(R.drawable.bill_up_close);
+            Drawable placeholder = getResources().getDrawable(R.drawable.sample);
             holder.bindObject(galleryItem);
         }
 
